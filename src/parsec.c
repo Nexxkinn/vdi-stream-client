@@ -136,6 +136,7 @@ Sint32 vdi_stream_client__event_loop(vdi_config_s *vdi_config) {
 	struct redirect_context_s redirect_context[USB_MAX] = {0};
 	SDL_bool focus = SDL_FALSE;
 	SDL_bool grab_forced = SDL_FALSE;
+	SDL_bool isFullScreen = SDL_FALSE;
 	Uint32 wait_time = 0;
 	Uint32 last_time = 0;
 	Sint32 error = 0;
@@ -419,6 +420,7 @@ Sint32 vdi_stream_client__event_loop(vdi_config_s *vdi_config) {
 	/* event loop. */
 	while (parsec_context.done == SDL_FALSE) {
 		for (SDL_Event msg; SDL_PollEvent(&msg);) {
+			const Uint8 *state = SDL_GetKeyboardState(NULL);
 			ParsecMessage pmsg = {0};
 
 			switch (msg.type) {
@@ -433,47 +435,83 @@ Sint32 vdi_stream_client__event_loop(vdi_config_s *vdi_config) {
 					/* TODO: we need to re-grab keyboard later. (workaround for buggy x11 and sdl) */
 					focus = SDL_FALSE;
 
-					pmsg.type = MESSAGE_KEYBOARD;
-					pmsg.keyboard.code = (ParsecKeycode) msg.key.keysym.scancode;
-					pmsg.keyboard.mod = msg.key.keysym.mod;
-					pmsg.keyboard.pressed = SDL_FALSE;
-					break;
+					/* remap right Alt key as super key */
+					if (msg.key.keysym.scancode == SDL_SCANCODE_RALT) {
+						pmsg.type = MESSAGE_KEYBOARD;
+						pmsg.keyboard.code = (ParsecKeycode) SDL_SCANCODE_LGUI;
+						pmsg.keyboard.mod = KMOD_LGUI;
+						pmsg.keyboard.pressed = SDL_FALSE;
+						break;
+					}
+					else {
+						pmsg.type = MESSAGE_KEYBOARD;
+						pmsg.keyboard.code = (ParsecKeycode) msg.key.keysym.scancode;
+						pmsg.keyboard.mod = msg.key.keysym.mod;
+						pmsg.keyboard.pressed = SDL_FALSE;
+						break;
+					}
 				case SDL_KEYDOWN:
+					/* trigger parsec keybinds */
+					if (state[SDL_SCANCODE_LCTRL] && state[SDL_SCANCODE_LALT]) {
 
-					/* check if we need to switch window grab state. */
-					if ((msg.key.keysym.mod & KMOD_LCTRL) != 0 &&
-					    (msg.key.keysym.mod & KMOD_LALT) != 0) {
+						/* mouse detach */
+						if(state[SDL_SCANCODE_Z]) {
+							vdi_stream_client__log_info("mouse detach triggered\n")
+							/* check if no forced grab. */
+							if (grab_forced == SDL_FALSE) {
 
-						/* check if no forced grab. */
-						if (grab_forced == SDL_FALSE) {
+								/* check if no mouse button is hold down. */
+								if ((SDL_GetMouseState(NULL, NULL) & SDL_BUTTON_LMASK) == 0 &&
+									(SDL_GetMouseState(NULL, NULL) & SDL_BUTTON_MMASK) == 0 &&
+									(SDL_GetMouseState(NULL, NULL) & SDL_BUTTON_RMASK) == 0) {
 
-							/* check if no mouse button is hold down. */
-							if ((SDL_GetMouseState(NULL, NULL) & SDL_BUTTON_LMASK) == 0 &&
-							    (SDL_GetMouseState(NULL, NULL) & SDL_BUTTON_MMASK) == 0 &&
-							    (SDL_GetMouseState(NULL, NULL) & SDL_BUTTON_RMASK) == 0) {
+									/* check if we need to release mouse grab. */
+									if (vdi_config->grab == 1 && SDL_GetWindowGrab(parsec_context.window) == SDL_TRUE) {
+										SDL_SetWindowGrab(parsec_context.window, SDL_FALSE);
+									}
 
-								/* check if we need to release mouse grab. */
-								if (vdi_config->grab == 1 && SDL_GetWindowGrab(parsec_context.window) == SDL_TRUE) {
-									SDL_SetWindowGrab(parsec_context.window, SDL_FALSE);
+									/* check if we need to release relative grab. */
+									if (SDL_GetRelativeMouseMode() == SDL_TRUE) {
+										SDL_SetRelativeMouseMode(SDL_FALSE);
+										SDL_ShowCursor(SDL_TRUE);
+									}
+
+									/* remove grab information from window title. */
+									SDL_SetWindowTitle(parsec_context.window, "VDI Stream Client");
+
+									/* don't send hotkey to host and break execution. */
+									break;
 								}
-
-								/* check if we need to release relative grab. */
-								if (SDL_GetRelativeMouseMode() == SDL_TRUE) {
-									SDL_SetRelativeMouseMode(SDL_FALSE);
-									SDL_ShowCursor(SDL_TRUE);
-								}
-
-								/* remove grab information from window title. */
-								SDL_SetWindowTitle(parsec_context.window, "VDI Stream Client");
-
-								/* don't send hotkey to host and break execution. */
-								break;
 							}
+
+							}
+						
+						/* toggle fullscreen */
+						if(state[SDL_SCANCODE_W]) {
+							vdi_stream_client__log_info("fullscreen triggered\n")
+							isFullScreen = !isFullScreen;
+							SDL_DisplayMode dm;
+							SDL_GetDesktopDisplayMode(0, &dm);
+							parsec_context.window_width = dm.w;
+							parsec_context.window_height = dm.h;
+							
+							SDL_SetWindowSize(parsec_context.window,dm.w,dm.h);
+							SDL_SetWindowFullscreen(parsec_context.window, isFullScreen);
+							break;
 						}
 					}
 
+					/* super key trigger to mitigate wayland limitation */
+					if (state[SDL_SCANCODE_RALT]) {
+						pmsg.type = MESSAGE_KEYBOARD;
+						pmsg.keyboard.code = (ParsecKeycode) SDL_SCANCODE_LGUI;
+						pmsg.keyboard.mod = KMOD_LGUI;
+						pmsg.keyboard.pressed = SDL_TRUE;
+						break;
+					}
+
 					/* check if we need to toggle runtime configuration. */
-					if ((msg.key.keysym.mod & KMOD_LSHIFT) != 0) {
+					if (state[SDL_SCANCODE_LSHIFT]) {
 
 						/* check if we need to toggle forced grab. */
 						if (msg.key.keysym.sym == SDLK_F12) {
@@ -705,19 +743,19 @@ Sint32 vdi_stream_client__event_loop(vdi_config_s *vdi_config) {
 		}
 
 		/* check if we need to resize window due to client resolution change. */
-		if ((parsec_context.window_width != parsec_context.client_status.decoder->width || parsec_context.window_height != parsec_context.client_status.decoder->height) &&
-		    parsec_context.client_status.decoder->width > 0 &&
-		    parsec_context.client_status.decoder->height > 0) {
-			vdi_stream_client__log_info("Change resolution from %dx%d to %dx%d\n",
-				parsec_context.window_width,
-				parsec_context.window_height,
-				parsec_context.client_status.decoder->width,
-				parsec_context.client_status.decoder->height
-			);
-			SDL_SetWindowSize(parsec_context.window, parsec_context.client_status.decoder->width, parsec_context.client_status.decoder->height);
-			parsec_context.window_width = parsec_context.client_status.decoder->width;
-			parsec_context.window_height = parsec_context.client_status.decoder->height;
-		}
+		// if ((parsec_context.window_width != parsec_context.client_status.decoder->width || parsec_context.window_height != parsec_context.client_status.decoder->height) &&
+		//     parsec_context.client_status.decoder->width > 0 &&
+		//     parsec_context.client_status.decoder->height > 0) {
+		// 	vdi_stream_client__log_info("Change resolution from %dx%d to %dx%d\n",
+		// 		parsec_context.window_width,
+		// 		parsec_context.window_height,
+		// 		parsec_context.client_status.decoder->width,
+		// 		parsec_context.client_status.decoder->height
+		// 	);
+		// 	SDL_SetWindowSize(parsec_context.window, parsec_context.client_status.decoder->width, parsec_context.client_status.decoder->height);
+		// 	parsec_context.window_width = parsec_context.client_status.decoder->width;
+		// 	parsec_context.window_height = parsec_context.client_status.decoder->height;
+		// }
 
 		/* check if we need to regrab keyboard on modifier keypress. */
 		if (focus == SDL_FALSE && (SDL_GetWindowFlags(parsec_context.window) & SDL_WINDOW_INPUT_FOCUS) != 0) {

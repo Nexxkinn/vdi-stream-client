@@ -286,6 +286,7 @@ Sint32 vdi_stream_client__event_loop(vdi_config_s *vdi_config) {
 		/* connection established */
 		if (e == PARSEC_OK) {
 
+			vdi_stream_client__log_info("H.265 status: %s\n", parsec_context.client_status.decoder->h265 ? "true" : "false" );
 			/* decoder not yet initialized. */
 			if (parsec_context.client_status.decoder->width == 0 &&
 			    parsec_context.client_status.decoder->height == 0 &&
